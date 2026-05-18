@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cronograma Estratégico — beX Educação</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', -apple-system, sans-serif; background: #E8EDF5; min-height: 100vh; color: #1A202C; }
+    input, select, textarea, button { font-family: inherit; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #EDF2F7; }
+    ::-webkit-scrollbar-thumb { background: #CBD5E0; border-radius: 3px; }
+
+    /* ── Export clean mode: hide all editing UI ── */
+    .exporting .eui { display: none !important; }
+    /* In export mode, if logo exists show it; if not, collapse the logo slot */
+    .exporting .logo-slot-empty { display: none !important; }
+
+    .gantt-bar { cursor: grab; user-select: none; }
+    .gantt-bar:active { cursor: grabbing; }
+    .resize-l, .resize-r { cursor: ew-resize; }
+    [contenteditable]:focus { outline: 2px solid #4299E1; border-radius: 2px; }
+    .exporting [contenteditable] { pointer-events: none; outline: none; }
+
+    @keyframes slideIn { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
+    .panel-in { animation: slideIn 0.18s ease-out; }
+
+    @media print {
+      body { background: white; }
+      .no-print { display: none !important; }
+      .eui { display: none !important; }
+      .logo-slot-empty { display: none !important; }
+    }
+
+    .btn { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; border:none; transition:all 0.15s; }
+    .btn:hover { filter:brightness(0.95); }
+    .btn:disabled { opacity:0.6; cursor:not-allowed; }
+    .btn-primary { background:#1B2B5B; color:white; }
+    .btn-red    { background:#C53030; color:white; }
+    .btn-outline { background:white; color:#4A5568; border:1px solid #E2E8F0; }
+    .btn-blue   { background:#EBF8FF; color:#2B6CB0; border:1px solid #90CDF4; }
+    .btn-danger { background:#FFF5F5; color:#E53E3E; border:1px solid #FEB2B2; }
+    .tact { background:none; border:none; cursor:pointer; padding:3px; border-radius:4px; display:flex; align-items:center; justify-content:center; }
+    .tact:hover { background:rgba(0,0,0,0.08); }
+
+    /* Client/version bar */
+    .cv-select { padding:5px 10px; border:1px solid #E2E8F0; border-radius:7px; font-size:12px; font-weight:600; color:#2D3748; background:white; cursor:pointer; outline:none; }
+    .cv-select:focus { border-color:#63B3ED; }
+    .cv-tag { font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:#A0AEC0; }
+    .version-badge { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; background:#EBF4FF; border:1px solid #BEE3F8; border-radius:20px; font-size:11px; font-weight:700; color:#2B6CB0; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+/* ─── Constants ─── */
+const COL_W = 26;
+const LEFT_W = 290;
+const TRACK_H = 40;
+const SUB_H = 30;
+const MONTHS = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+const STORAGE_KEY = 'bex-cronograma-v2';
+
+/* ─── Utils ─── */
+const uid = () => Math.random().toString(36).slice(2, 10);
+const hex2rgba = (hex, a=1) => {
+  if (!hex || hex.length < 7) return `rgba(128,128,128,${a})`;
+  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+};
+const fmtDate = ts => new Date(ts).toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'});
+const deepClone = obj => JSON.parse(JSON.stringify(obj));
+
+const getMonthList = (sm,sy,em,ey) => {
+  const list=[]; let m=sm,y=sy;
+  while(y<ey||(y===ey&&m<=em)){ list.push({m,y}); if(++m>11){m=0;y++;} }
+  return list;
+};
+
+/* ─── Default cronograma data ─── */
+const mkDefault = () => ({
+  title: 'Cronograma Geral',
+  subtitle: 'Projeto CX',
+  clientLogo: null,
+  bexLogo: null,
+  tl: { sm:11, sy:2025, em:9, ey:2026 },
+  tracks: [
+    {
+      id:uid(), name:'Mentoria - Construindo CX Estratégico',
+      color:'#1E3A6E', collapsed:false,
+      bar:{ s:2, e:35 },
+      subtasks:[
+        { id:uid(), name:'Diagnóstico',            bars:[{ s:0, e:6  }] },
+        { id:uid(), name:'Encontros semanais/quinzenais para desdobramento', bars:[{ s:5, e:27 }] },
+        { id:uid(), name:'Marcos de "fechamento"', bars:[{ s:8,e:10 },{ s:16,e:18 },{ s:22,e:24 }] },
+        { id:uid(), name:'Encerramento',            bars:[{ s:28, e:35 }] },
+      ]
+    },
+    { id:uid(), name:'Palestra - Protagonistas de Grandes Experiências', color:'#00838F', collapsed:false, bar:{s:3,e:6}, subtasks:[] },
+    {
+      id:uid(), name:'Trilha Protagonistas (para área de CX)', color:'#2E7D32', collapsed:false, bar:{s:3,e:8},
+      subtasks:[
+        { id:uid(), name:'Encontro 1', bars:[{ s:14,e:15 }] },
+        { id:uid(), name:'Encontro 2', bars:[{ s:18,e:19 }] },
+        { id:uid(), name:'Encontro 3', bars:[] },
+      ]
+    },
+    {
+      id:uid(), name:'Trilha Especialistas (áreas de negócios)', color:'#C62828', collapsed:false, bar:null,
+      subtasks:[
+        { id:uid(), name:'Encontro 1', bars:[] },
+        { id:uid(), name:'Encontro 2', bars:[] },
+        { id:uid(), name:'Encontro 3', bars:[] },
+      ]
+    },
+    {
+      id:uid(), name:'Workshop PDE (grupo selecionado)', color:'#E65100', collapsed:false, bar:{s:3,e:11},
+      subtasks:[
+        { id:uid(), name:'Planejamento',                    bars:[{ s:3,e:7  }] },
+        { id:uid(), name:'Seleção de participantes + Convite', bars:[{ s:5,e:7  }] },
+        { id:uid(), name:'Aplicação do Workshop',           bars:[{ s:8,e:9  }] },
+        { id:uid(), name:'Conclusão do Workshop',           bars:[{ s:10,e:11 }] },
+      ]
+    },
+    {
+      id:uid(), name:'Programa Embaixadores', color:'#558B2F', collapsed:false, bar:{s:3,e:43},
+      subtasks:[
+        { id:uid(), name:'Mentoria de Construção + Lançamento', bars:[{ s:14,e:19 }] },
+        { id:uid(), name:'Formação dos Embaixadores',           bars:[{ s:20,e:35 }] },
+        { id:uid(), name:'Fechamento',                          bars:[{ s:38,e:43 }] },
+      ]
+    },
+  ]
+});
+
+/* ─── Default full app state ─── */
+const mkAppState = () => {
+  const cid=uid(), vid=uid();
+  return {
+    activeClientId: cid,
+    clients:[{
+      id:cid, name:'VWFS',
+      activeVersionId:vid,
+      versions:[{ id:vid, label:'V1', createdAt:Date.now(), data:mkDefault() }]
+    }]
+  };
+};
+
+/* ─── SVG Icons ─── */
+const Ico = ({ n, sz=16, c='currentColor' }) => {
+  const paths = {
+    plus:    <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+    trash:   <><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></>,
+    chevD:   <polyline points="6 9 12 15 18 9"/>,
+    chevR:   <polyline points="9 18 15 12 9 6"/>,
+    down:    <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>,
+    up:      <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,
+    gear:    <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>,
+    img:     <><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,
+    print:   <><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></>,
+    x:       <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
+    edit:    <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>,
+    arrow:   <><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></>,
+    copy:    <><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></>,
+    save:    <><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,
+    history: <><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.39"/></>,
+    user:    <><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></>,
+  };
+  return <svg width={sz} height={sz} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths[n]}</svg>;
+};
+
+/* ─── ColorPicker ─── */
+const ColorPicker = ({ color, onChange }) => (
+  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+    <div style={{ width:30,height:30,borderRadius:6,background:color,border:'2px solid rgba(0,0,0,0.1)',cursor:'pointer',position:'relative',overflow:'hidden',flexShrink:0 }}>
+      <input type="color" value={color} onChange={e=>onChange(e.target.value)}
+        style={{ position:'absolute',top:-5,left:-5,width:40,height:40,opacity:0,cursor:'pointer',border:'none',padding:0 }}/>
+    </div>
+    <input type="text" value={color}
+      onChange={e=>{ if(/^#[0-9A-Fa-f]{0,6}$/.test(e.target.value)) onChange(e.target.value); }}
+      style={{ width:78,padding:'4px 8px',border:'1px solid #E2E8F0',borderRadius:5,fontSize:12,fontFamily:'monospace' }}/>
+  </div>
+);
+
+/* ─── LogoSlot ─── */
+const LogoSlot = ({ value, onUpload, onClear }) => (
+  <div style={{ position:'relative', minWidth:70 }}>
+    {/* Logo image — always visible when present */}
+    {value && <img src={value} alt="logo" style={{ maxHeight:44,maxWidth:120,objectFit:'contain',display:'block' }}/>}
+    {/* Edit-only: upload area when empty */}
+    {!value && (
+      <label className="logo-slot-empty eui" style={{
+        display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+        width:80,height:44,border:'2px dashed #CBD5E0',borderRadius:8,cursor:'pointer',
+        background:'#F7FAFC',
+      }}>
+        <Ico n="img" sz={16} c="#CBD5E0"/>
+        <span style={{ fontSize:9,color:'#A0AEC0',marginTop:2,fontWeight:500 }}>Fazer upload</span>
+        <input type="file" accept="image/*" onChange={onUpload} style={{ position:'absolute',opacity:0,width:0,height:0 }}/>
+      </label>
+    )}
+    {/* Edit-only: re-upload overlay when logo exists */}
+    {value && (
+      <label className="eui" style={{ position:'absolute',inset:0,cursor:'pointer',opacity:0 }}>
+        <input type="file" accept="image/*" onChange={onUpload} style={{ position:'absolute',opacity:0,width:0,height:0 }}/>
+      </label>
+    )}
+    {/* Edit-only: remove button */}
+    {value && (
+      <button className="eui" onClick={onClear}
+        style={{ fontSize:10,color:'#E53E3E',background:'none',border:'none',cursor:'pointer',padding:'2px 0',display:'block',marginTop:2 }}>
+        Remover
+      </button>
+    )}
+  </div>
+);
+
+/* ─── GanttBar (com label opcional) ─── */
+const GanttBar = React.memo(({ bar, color, onMouseDown }) => {
+  const left = bar.s * COL_W;
+  const width = Math.max((bar.e - bar.s + 1) * COL_W - 2, 10);
+  return (
+    <div className="gantt-bar" style={{
+      position:'absolute', left, width, height:22, top:'50%', transform:'translateY(-50%)',
+      background:color, borderRadius:5,
+      boxShadow:'0 1px 3px rgba(0,0,0,0.22)', zIndex:2,
+      display:'flex', alignItems:'center', overflow:'hidden',
+    }} onMouseDown={e=>onMouseDown(e,'move')}>
+      <div className="resize-l" style={{ position:'absolute',left:0,top:0,width:7,height:'100%',background:'rgba(255,255,255,0.2)',borderRadius:'5px 0 0 5px',zIndex:3,flexShrink:0 }}
+        onMouseDown={e=>{ e.stopPropagation(); onMouseDown(e,'resize-l'); }}/>
+      {bar.label && (
+        <span style={{
+          fontSize:9.5, color:'rgba(255,255,255,0.95)', fontWeight:500,
+          paddingLeft:10, paddingRight:10,
+          whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis',
+          pointerEvents:'none', flex:1,
+        }}>{bar.label}</span>
+      )}
+      <div className="resize-r" style={{ position:'absolute',right:0,top:0,width:7,height:'100%',background:'rgba(255,255,255,0.2)',borderRadius:'0 5px 5px 0',zIndex:3,flexShrink:0 }}
+        onMouseDown={e=>{ e.stopPropagation(); onMouseDown(e,'resize-r'); }}/>
+    </div>
+  );
+});
+
+/* ─── GridLines ─── */
+const GridLines = React.memo(({ months }) => (
+  <>
+    {months.map((_,mi)=>[0,1,2,3].map(w=>(
+      <div key={`${mi}-${w}`} style={{ position:'absolute',left:(mi*4+w)*COL_W,top:0,bottom:0,width:1,
+        background:w===0?'rgba(0,0,0,0.07)':'rgba(0,0,0,0.035)',pointerEvents:'none',zIndex:1 }}/>
+    )))}
+  </>
+));
+
+/* ═══════════════════════════════════════════════════
+   APP
+═══════════════════════════════════════════════════ */
+const App = () => {
+  /* ── State ── */
+  const [appState, setAppState] = useState(() => {
+    try { const s=localStorage.getItem(STORAGE_KEY); if(s) return JSON.parse(s); } catch(e){}
+    return mkAppState();
+  });
+  const [panel, setPanel] = useState(null);   // 'settings' | 'track:{id}' | null
+  const [exporting, setExporting] = useState(false); // false | 'png' | 'pdf'
+
+  /* ── Persist ── */
+  useEffect(()=>{
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(appState)); } catch(e){}
+  }, [appState]);
+
+  /* ── Derive active client/version/data ── */
+  const activeClient  = appState.clients.find(c=>c.id===appState.activeClientId) ?? appState.clients[0];
+  const activeVersion = activeClient.versions.find(v=>v.id===activeClient.activeVersionId) ?? activeClient.versions[0];
+  const data = activeVersion.data;
+
+  /* ── setData: updates active version's data only ── */
+  const setData = useCallback(updater => {
+    setAppState(prev => ({
+      ...prev,
+      clients: prev.clients.map(c => {
+        if (c.id !== prev.activeClientId) return c;
+        return {
+          ...c,
+          versions: c.versions.map(v => {
+            if (v.id !== c.activeVersionId) return v;
+            const next = typeof updater==='function' ? updater(v.data) : {...v.data,...updater};
+            return { ...v, data: next };
+          })
+        };
+      })
+    }));
+  }, []);
+
+  /* ── Refs ── */
+  const chartRef = useRef(null);
+  const dragRef  = useRef(null);
+  const dataRef  = useRef(data);
+  dataRef.current = data;
+  const totalWeeksRef = useRef(0);
+
+  const months = useMemo(()=>getMonthList(data.tl.sm,data.tl.sy,data.tl.em,data.tl.ey),[data.tl]);
+  const totalWeeks = months.length * 4;
+  totalWeeksRef.current = totalWeeks;
+
+  /* ── Drag system ── */
+  useEffect(()=>{
+    const move = e => {
+      if (!dragRef.current) return;
+      const { trackId,subtaskId,barIdx,type,sx,os,oe } = dragRef.current;
+      const TW = totalWeeksRef.current;
+      const delta = Math.round((e.clientX-sx)/COL_W);
+      const dur = oe-os;
+      let ns=os, ne=oe;
+      if (type==='move')     { ns=Math.max(0,Math.min(os+delta,TW-1-dur)); ne=ns+dur; }
+      else if(type==='resize-l') { ns=Math.max(0,Math.min(os+delta,oe-1)); }
+      else if(type==='resize-r') { ne=Math.max(os+1,Math.min(oe+delta,TW-1)); }
+      setData(prev => ({
+        ...prev,
+        tracks: prev.tracks.map(t=>{
+          if(t.id!==trackId) return t;
+          if(!subtaskId) return {...t,bar:{...t.bar,s:ns,e:ne}};
+          return {...t,subtasks:t.subtasks.map(sub=>{
+            if(sub.id!==subtaskId) return sub;
+            return {...sub,bars:sub.bars.map((b,i)=>i===barIdx?{...b,s:ns,e:ne}:b)};
+          })};
+        })
+      }));
+    };
+    const up = ()=>{ dragRef.current=null; };
+    window.addEventListener('mousemove',move);
+    window.addEventListener('mouseup',up);
+    return ()=>{ window.removeEventListener('mousemove',move); window.removeEventListener('mouseup',up); };
+  },[setData]);
+
+  const startDrag = useCallback((e,trackId,subtaskId,barIdx,type,bar)=>{
+    e.preventDefault(); e.stopPropagation();
+    dragRef.current = { trackId,subtaskId,barIdx,type,sx:e.clientX,os:bar.s,oe:bar.e };
+  },[]);
+
+  /* ── Track/subtask mutators ── */
+  const updTrack   = (id,patch) => setData(p=>({...p,tracks:p.tracks.map(t=>t.id===id?{...t,...patch}:t)}));
+  const updSubtask = (tid,sid,patch) => setData(p=>({...p,tracks:p.tracks.map(t=>t.id!==tid?t:{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,...patch}:s)})}));
+  const addTrack   = () => { const t={id:uid(),name:'Nova Trilha',color:'#4A90D9',collapsed:false,bar:{s:0,e:7},subtasks:[]}; setData(p=>({...p,tracks:[...p.tracks,t]})); setPanel('track:'+t.id); };
+  const delTrack   = id => { setData(p=>({...p,tracks:p.tracks.filter(t=>t.id!==id)})); if(panel==='track:'+id) setPanel(null); };
+  const moveTrack  = (id,dir) => setData(p=>{ const a=[...p.tracks],i=a.findIndex(t=>t.id===id); if(i+dir<0||i+dir>=a.length) return p; [a[i],a[i+dir]]=[a[i+dir],a[i]]; return {...p,tracks:a}; });
+  const addSubtask = tid => { const s={id:uid(),name:'Nova Etapa',bars:[{s:0,e:3}]}; setData(p=>({...p,tracks:p.tracks.map(t=>t.id!==tid?t:{...t,subtasks:[...t.subtasks,s]})})); };
+  const delSubtask = (tid,sid) => setData(p=>({...p,tracks:p.tracks.map(t=>t.id!==tid?t:{...t,subtasks:t.subtasks.filter(s=>s.id!==sid)})}));
+
+  /* ── Client management ── */
+  const addClient = () => {
+    const cid=uid(),vid=uid();
+    setAppState(prev=>({ ...prev, activeClientId:cid,
+      clients:[...prev.clients,{ id:cid,name:'Novo Cliente',activeVersionId:vid,
+        versions:[{ id:vid,label:'V1',createdAt:Date.now(),data:mkDefault() }] }] }));
+  };
+  const switchClient = id => setAppState(prev=>({...prev,activeClientId:id}));
+  const renameClient = (id,name) => setAppState(prev=>({...prev,clients:prev.clients.map(c=>c.id===id?{...c,name}:c)}));
+  const deleteClient = id => {
+    if(appState.clients.length<=1){ alert('É necessário ter pelo menos um cliente.'); return; }
+    if(!window.confirm('Remover este cliente e todos os seus cronogramas?')) return;
+    const rest=appState.clients.filter(c=>c.id!==id);
+    setAppState(prev=>({...prev,activeClientId:rest[0].id,clients:rest}));
+  };
+
+  /* ── Version management ── */
+  const addVersion = () => {
+    const vid=uid();
+    const nextLabel=`V${activeClient.versions.length+1}`;
+    setAppState(prev=>({...prev,clients:prev.clients.map(c=>{
+      if(c.id!==prev.activeClientId) return c;
+      const newV={ id:vid,label:nextLabel,createdAt:Date.now(),data:deepClone(activeVersion.data) };
+      return {...c,activeVersionId:vid,versions:[...c.versions,newV]};
+    })}));
+  };
+  const switchVersion = id => setAppState(prev=>({...prev,clients:prev.clients.map(c=>c.id!==prev.activeClientId?c:{...c,activeVersionId:id})}));
+  const renameVersion = (id,label) => setAppState(prev=>({...prev,clients:prev.clients.map(c=>{
+    if(c.id!==prev.activeClientId) return c;
+    return {...c,versions:c.versions.map(v=>v.id===id?{...v,label}:v)};
+  })}));
+  const deleteVersion = id => {
+    if(activeClient.versions.length<=1){ alert('É necessário ter pelo menos uma versão.'); return; }
+    if(!window.confirm('Remover esta versão?')) return;
+    const rest=activeClient.versions.filter(v=>v.id!==id);
+    const newActive=activeClient.activeVersionId===id?rest[rest.length-1].id:activeClient.activeVersionId;
+    setAppState(prev=>({...prev,clients:prev.clients.map(c=>c.id!==prev.activeClientId?c:{...c,activeVersionId:newActive,versions:rest})}));
+  };
+
+  /* ── Logo upload ── */
+  const handleLogo = field => e => {
+    const f=e.target.files[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=ev=>setData(p=>({...p,[field]:ev.target.result}));
+    r.readAsDataURL(f);
+  };
+
+  /* ── Export: capture chart without editing UI ── */
+  const captureChart = async () => {
+    const el = chartRef.current;
+    el.classList.add('exporting');
+    await new Promise(r=>setTimeout(r,80));
+    try {
+      return await html2canvas(el,{ scale:2,useCORS:true,backgroundColor:'#ffffff',logging:false });
+    } finally {
+      el.classList.remove('exporting');
+    }
+  };
+
+  const exportPNG = async () => {
+    if(!chartRef.current||exporting) return;
+    setExporting('png');
+    try {
+      const canvas=await captureChart();
+      const a=document.createElement('a');
+      a.download=`cronograma-${activeClient.name}-${activeVersion.label}.png`.replace(/\s+/g,'-').toLowerCase();
+      a.href=canvas.toDataURL('image/png');
+      a.click();
+    } catch(err){ alert('Erro ao exportar PNG: '+err.message); }
+    setExporting(false);
+  };
+
+  const exportPDF = async () => {
+    if(!chartRef.current||exporting) return;
+    setExporting('pdf');
+    try {
+      const canvas=await captureChart();
+      const { jsPDF }=window.jspdf;
+      const px2pt = n => n*0.75;
+      const w=canvas.width/2, h=canvas.height/2;
+      const pdf=new jsPDF({ orientation:w>=h?'l':'p', unit:'pt', format:[px2pt(w),px2pt(h)] });
+      pdf.addImage(canvas.toDataURL('image/png'),'PNG',0,0,px2pt(w),px2pt(h));
+      pdf.save(`cronograma-${activeClient.name}-${activeVersion.label}.pdf`.replace(/\s+/g,'-').toLowerCase());
+    } catch(err){ alert('Erro ao exportar PDF: '+err.message); }
+    setExporting(false);
+  };
+
+  const selTrackId = panel?.startsWith('track:')?panel.slice(6):null;
+  const selTrack   = selTrackId?data.tracks.find(t=>t.id===selTrackId):null;
+
+  /* ═══════════ RENDER ═══════════ */
+  return (
+    <div style={{ minHeight:'100vh',background:'#E8EDF5',padding:16 }}>
+
+      {/* ── Client / Version bar ── */}
+      <ClientVersionBar
+        appState={appState} activeClient={activeClient} activeVersion={activeVersion}
+        onAddClient={addClient} onSwitchClient={switchClient}
+        onRenameClient={renameClient} onDeleteClient={deleteClient}
+        onAddVersion={addVersion} onSwitchVersion={switchVersion}
+        onRenameVersion={renameVersion} onDeleteVersion={deleteVersion}
+      />
+
+      {/* ── Actions toolbar ── */}
+      <div className="no-print" style={{
+        display:'flex',alignItems:'center',justifyContent:'space-between',
+        background:'white',borderRadius:10,padding:'9px 16px',
+        boxShadow:'0 2px 8px rgba(0,0,0,0.07)',marginBottom:14,flexWrap:'wrap',gap:8,
+      }}>
+        <div style={{ display:'flex',alignItems:'center',gap:10 }}>
+          <span style={{ fontSize:14,fontWeight:800,color:'#1B2B5B',letterSpacing:'-0.02em' }}>Cronograma Estratégico</span>
+          <span style={{ fontSize:10,color:'#718096',background:'#EDF2F7',padding:'2px 9px',borderRadius:20,fontWeight:600 }}>beX Educação</span>
+        </div>
+        <div style={{ display:'flex',gap:7,flexWrap:'wrap' }}>
+          <button className="btn btn-blue" onClick={addTrack}><Ico n="plus" sz={13}/>Nova Trilha</button>
+          <button className="btn btn-outline" onClick={()=>setPanel(panel==='settings'?null:'settings')} style={{ background:panel==='settings'?'#EDF2F7':'white' }}>
+            <Ico n="gear" sz={13}/>Configurar
+          </button>
+          <button className="btn btn-outline" onClick={()=>window.print()}><Ico n="print" sz={13}/>Imprimir</button>
+          <button className="btn btn-primary" onClick={exportPNG} disabled={!!exporting}>
+            <Ico n="img" sz={13} c="white"/>{exporting==='png'?'Gerando…':'PNG'}
+          </button>
+          <button className="btn btn-red" onClick={exportPDF} disabled={!!exporting}>
+            <Ico n="down" sz={13} c="white"/>{exporting==='pdf'?'Gerando…':'PDF'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Chart card (captured for export) ── */}
+      <div ref={chartRef} style={{
+        background:'white',borderRadius:12,
+        boxShadow:'0 4px 24px rgba(0,0,0,0.09)',overflow:'hidden',
+        minWidth:LEFT_W+totalWeeks*COL_W+32,
+      }}>
+        {/* Document header */}
+        <div style={{ display:'flex',alignItems:'center',padding:'14px 20px',borderBottom:'2px solid #EDF2F7',gap:16,background:'white' }}>
+          <div style={{ display:'flex',alignItems:'center',gap:14,flexShrink:0 }}>
+            <LogoSlot value={data.clientLogo} onUpload={handleLogo('clientLogo')} onClear={()=>setData(p=>({...p,clientLogo:null}))}/>
+            <div style={{ width:1,height:40,background:'#EDF2F7' }}/>
+            <LogoSlot value={data.bexLogo} onUpload={handleLogo('bexLogo')} onClear={()=>setData(p=>({...p,bexLogo:null}))}/>
+          </div>
+          <div style={{ flex:1,textAlign:'center' }}>
+            <div contentEditable suppressContentEditableWarning onBlur={e=>setData(p=>({...p,title:e.target.textContent}))}
+              style={{ fontSize:19,fontWeight:800,color:'#1B2B5B',outline:'none',cursor:'text',letterSpacing:'-0.02em',minWidth:20 }}>
+              {data.title}
+            </div>
+            <div contentEditable suppressContentEditableWarning onBlur={e=>setData(p=>({...p,subtitle:e.target.textContent}))}
+              style={{ fontSize:13,fontWeight:500,color:'#4A90D9',outline:'none',cursor:'text',minWidth:20,marginTop:2 }}>
+              {data.subtitle}
+            </div>
+          </div>
+          <div style={{ width:150,flexShrink:0 }}/>
+        </div>
+
+        {/* Gantt */}
+        <div style={{ overflowX:'auto' }}>
+          <TimelineHeader months={months}/>
+          <div>
+            {data.tracks.map(track=>(
+              <TrackGroup key={track.id} track={track} months={months}
+                isSelected={selTrackId===track.id}
+                onSelectTrack={id=>setPanel(panel==='track:'+id?null:'track:'+id)}
+                onToggleCollapse={id=>updTrack(id,{collapsed:!track.collapsed})}
+                onUpdateName={(id,n)=>updTrack(id,{name:n})}
+                onUpdateSubName={(tid,sid,n)=>updSubtask(tid,sid,{name:n})}
+                onAddSubtask={addSubtask} onDelTrack={delTrack}
+                onDelSubtask={delSubtask}
+                onAddBar={(tid,sid)=>updSubtask(tid,sid,{bars:[...(data.tracks.find(t=>t.id===tid)?.subtasks.find(s=>s.id===sid)?.bars??[]),{s:0,e:3}]})}
+                onMoveTrack={moveTrack} onStartDrag={startDrag}
+              />
+            ))}
+            {data.tracks.length===0&&(
+              <div style={{ padding:'56px',textAlign:'center',color:'#A0AEC0' }}>
+                <p style={{ fontSize:14 }}>Nenhuma trilha. Clique em <strong>Nova Trilha</strong> para começar.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Panels overlay ── */}
+      {panel&&<div className="no-print" onClick={()=>setPanel(null)}
+        style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.28)',zIndex:998 }}/>}
+
+      {panel==='settings'&&(
+        <SettingsPanel data={data} setData={setData} onClose={()=>setPanel(null)}
+          onLogoUpload={handleLogo} onAddTrack={addTrack} onDelTrack={delTrack} updTrack={updTrack}/>
+      )}
+      {selTrack&&(
+        <TrackPanel track={selTrack} onClose={()=>setPanel(null)}
+          onUpdate={p=>updTrack(selTrack.id,p)}
+          onAddSubtask={()=>addSubtask(selTrack.id)}
+          onDelSubtask={sid=>delSubtask(selTrack.id,sid)}
+          updSubtask={(sid,p)=>updSubtask(selTrack.id,sid,p)}
+          onDelTrack={()=>delTrack(selTrack.id)} totalWeeks={totalWeeks}/>
+      )}
+    </div>
+  );
+};
+
+/* ─── ClientVersionBar ─── */
+const ClientVersionBar = ({
+  appState,activeClient,activeVersion,
+  onAddClient,onSwitchClient,onRenameClient,onDeleteClient,
+  onAddVersion,onSwitchVersion,onRenameVersion,onDeleteVersion,
+}) => {
+  const [editingClientName, setEditingClientName] = useState(false);
+  const [editingVersionLabel, setEditingVersionLabel] = useState(false);
+  const [clientNameVal, setClientNameVal] = useState(activeClient.name);
+  const [versionLabelVal, setVersionLabelVal] = useState(activeVersion.label);
+
+  useEffect(()=>{ setClientNameVal(activeClient.name); setEditingClientName(false); },[activeClient.id]);
+  useEffect(()=>{ setVersionLabelVal(activeVersion.label); setEditingVersionLabel(false); },[activeVersion.id]);
+
+  return (
+    <div className="no-print" style={{
+      display:'flex',alignItems:'center',background:'white',borderRadius:10,
+      padding:'10px 16px',boxShadow:'0 2px 8px rgba(0,0,0,0.07)',marginBottom:10,
+      flexWrap:'wrap',gap:14,
+    }}>
+      {/* ── Client section ── */}
+      <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+        <Ico n="user" sz={14} c="#A0AEC0"/>
+        <span className="cv-tag">Cliente</span>
+
+        <select className="cv-select" value={appState.activeClientId} onChange={e=>onSwitchClient(e.target.value)}>
+          {appState.clients.map(c=>(
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+
+        {/* Inline rename */}
+        {editingClientName ? (
+          <form onSubmit={e=>{e.preventDefault();onRenameClient(activeClient.id,clientNameVal);setEditingClientName(false);}}>
+            <input autoFocus value={clientNameVal} onChange={e=>setClientNameVal(e.target.value)}
+              onBlur={()=>{onRenameClient(activeClient.id,clientNameVal);setEditingClientName(false);}}
+              style={{ padding:'4px 8px',border:'1px solid #63B3ED',borderRadius:6,fontSize:12,fontWeight:600,width:120,outline:'none' }}/>
+          </form>
+        ) : (
+          <button className="tact" title="Renomear cliente" onClick={()=>setEditingClientName(true)}>
+            <Ico n="edit" sz={12} c="#A0AEC0"/>
+          </button>
+        )}
+
+        <button className="btn btn-blue" style={{ padding:'4px 10px',fontSize:11 }} onClick={onAddClient}>
+          <Ico n="plus" sz={11}/>Novo
+        </button>
+        {appState.clients.length>1&&(
+          <button className="tact" title="Remover cliente" onClick={()=>onDeleteClient(activeClient.id)}>
+            <Ico n="trash" sz={12} c="#FC8181"/>
+          </button>
+        )}
+      </div>
+
+      {/* divider */}
+      <div style={{ width:1,height:28,background:'#E2E8F0',flexShrink:0 }}/>
+
+      {/* ── Version section ── */}
+      <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+        <Ico n="history" sz={14} c="#A0AEC0"/>
+        <span className="cv-tag">Versão</span>
+
+        <select className="cv-select" value={activeClient.activeVersionId} onChange={e=>onSwitchVersion(e.target.value)}>
+          {activeClient.versions.map(v=>(
+            <option key={v.id} value={v.id}>{v.label} — {fmtDate(v.createdAt)}</option>
+          ))}
+        </select>
+
+        {/* Current version badge */}
+        <span className="version-badge">
+          <Ico n="save" sz={10} c="#2B6CB0"/>{activeVersion.label}
+        </span>
+
+        {/* Inline rename version */}
+        {editingVersionLabel ? (
+          <form onSubmit={e=>{e.preventDefault();onRenameVersion(activeVersion.id,versionLabelVal);setEditingVersionLabel(false);}}>
+            <input autoFocus value={versionLabelVal} onChange={e=>setVersionLabelVal(e.target.value)}
+              onBlur={()=>{onRenameVersion(activeVersion.id,versionLabelVal);setEditingVersionLabel(false);}}
+              style={{ padding:'4px 8px',border:'1px solid #63B3ED',borderRadius:6,fontSize:12,fontWeight:600,width:80,outline:'none' }}/>
+          </form>
+        ) : (
+          <button className="tact" title="Renomear versão" onClick={()=>setEditingVersionLabel(true)}>
+            <Ico n="edit" sz={12} c="#A0AEC0"/>
+          </button>
+        )}
+
+        <button className="btn btn-blue" style={{ padding:'4px 10px',fontSize:11 }} onClick={onAddVersion}
+          title="Salva uma cópia da versão atual como nova versão">
+          <Ico n="copy" sz={11}/>Nova versão
+        </button>
+        {activeClient.versions.length>1&&(
+          <button className="tact" title="Remover esta versão" onClick={()=>onDeleteVersion(activeVersion.id)}>
+            <Ico n="trash" sz={12} c="#FC8181"/>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/* ─── TimelineHeader ─── */
+const TimelineHeader = React.memo(({ months }) => (
+  <div style={{ display:'flex',background:'#1B2B5B',position:'sticky',top:0,zIndex:10 }}>
+    <div style={{ minWidth:LEFT_W,width:LEFT_W,background:'#0F1D3C',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+      <span style={{ color:'rgba(255,255,255,0.45)',fontSize:10,fontWeight:700,letterSpacing:'.08em',textTransform:'uppercase' }}>Atividades</span>
+    </div>
+    <div style={{ flex:1 }}>
+      <div style={{ display:'flex' }}>
+        {months.map((mo,i)=>(
+          <div key={i} style={{ width:COL_W*4,minWidth:COL_W*4,height:28,display:'flex',alignItems:'center',justifyContent:'center',
+            borderLeft:'1px solid rgba(255,255,255,0.12)',color:'white',fontSize:11,fontWeight:700,
+            letterSpacing:'.06em',textTransform:'uppercase',background:i%2===0?'#1B2B5B':'#1E3367' }}>
+            {MONTHS[mo.m]} {mo.y}
+          </div>
+        ))}
+      </div>
+      <div style={{ display:'flex',background:'#253B78' }}>
+        {months.map((_,mi)=>[1,2,3,4].map(w=>(
+          <div key={`${mi}-${w}`} style={{ width:COL_W,minWidth:COL_W,height:22,display:'flex',alignItems:'center',justifyContent:'center',
+            borderLeft:'1px solid rgba(255,255,255,0.06)',color:'rgba(255,255,255,0.6)',fontSize:10,fontWeight:600 }}>{w}</div>
+        )))}
+      </div>
+    </div>
+  </div>
+));
+
+/* ─── TrackGroup ─── */
+const TrackGroup = React.memo(({ track,months,isSelected,onSelectTrack,onToggleCollapse,
+  onUpdateName,onUpdateSubName,onAddSubtask,onDelTrack,onDelSubtask,onAddBar,onMoveTrack,onStartDrag }) => {
+
+  const bg    = hex2rgba(track.color,0.07);
+  const subBg = hex2rgba(track.color,0.035);
+
+  return (
+    <div>
+      {/* Track row */}
+      <div style={{ display:'flex',alignItems:'stretch',borderBottom:'1px solid rgba(0,0,0,0.07)',minHeight:TRACK_H,background:bg }}>
+        <div style={{ minWidth:LEFT_W,width:LEFT_W,display:'flex',alignItems:'center',gap:6,padding:'5px 8px 5px 0',borderRight:'1px solid rgba(0,0,0,0.07)',background:track.color }}>
+          <button className="tact" onClick={()=>onToggleCollapse(track.id)}
+            style={{ color:'rgba(255,255,255,0.7)',flexShrink:0,padding:'0 4px' }}>
+            <Ico n={track.collapsed?'chevR':'chevD'} sz={13} c="rgba(255,255,255,0.7)"/>
+          </button>
+          <div style={{ width:20,height:20,borderRadius:'50%',background:'rgba(255,255,255,0.22)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+            <Ico n="arrow" sz={10} c="white"/>
+          </div>
+          <div contentEditable suppressContentEditableWarning
+            onBlur={e=>onUpdateName(track.id,e.target.textContent)}
+            onClick={e=>{e.stopPropagation();onSelectTrack(track.id);}}
+            style={{ flex:1,fontSize:11.5,fontWeight:700,color:'white',outline:'none',cursor:'text',lineHeight:1.3,minWidth:20 }}>
+            {track.name}
+          </div>
+          {/* Edit-only action buttons */}
+          {isSelected&&(
+            <div className="eui" style={{ display:'flex',gap:1,flexShrink:0,marginRight:4 }}>
+              <button className="tact" title="Adicionar etapa" onClick={e=>{e.stopPropagation();onAddSubtask(track.id);}}>
+                <Ico n="plus" sz={11} c="rgba(255,255,255,0.8)"/>
+              </button>
+              <button className="tact" title="Mover para cima" onClick={e=>{e.stopPropagation();onMoveTrack(track.id,-1);}}>
+                <Ico n="up" sz={11} c="rgba(255,255,255,0.8)"/>
+              </button>
+              <button className="tact" title="Mover para baixo" onClick={e=>{e.stopPropagation();onMoveTrack(track.id,1);}}>
+                <Ico n="down" sz={11} c="rgba(255,255,255,0.8)"/>
+              </button>
+              <button className="tact" title="Configurar trilha" onClick={e=>{e.stopPropagation();onSelectTrack(track.id);}}>
+                <Ico n="gear" sz={11} c="rgba(255,255,255,0.8)"/>
+              </button>
+              <button className="tact" title="Remover trilha" onClick={e=>{e.stopPropagation();onDelTrack(track.id);}}>
+                <Ico n="trash" sz={11} c="rgba(255,200,200,0.9)"/>
+              </button>
+            </div>
+          )}
+        </div>
+        <div style={{ flex:1,position:'relative',minHeight:TRACK_H }}>
+          <GridLines months={months}/>
+          {track.bar&&(
+            <GanttBar bar={track.bar} color={track.color}
+              onMouseDown={(e,type)=>onStartDrag(e,track.id,null,0,type,track.bar)}/>
+          )}
+        </div>
+      </div>
+
+      {/* Subtask rows */}
+      {!track.collapsed&&track.subtasks.map(sub=>(
+        <div key={sub.id} style={{ display:'flex',alignItems:'stretch',borderBottom:'1px solid rgba(0,0,0,0.04)',minHeight:SUB_H,background:subBg }}>
+          <div style={{ minWidth:LEFT_W,width:LEFT_W,display:'flex',alignItems:'center',padding:'3px 6px 3px 26px',gap:5,borderRight:'1px solid rgba(0,0,0,0.05)' }}>
+            <div style={{ width:3,height:14,borderRadius:2,background:hex2rgba(track.color,0.4),flexShrink:0 }}/>
+            <div contentEditable suppressContentEditableWarning
+              onBlur={e=>onUpdateSubName(track.id,sub.id,e.target.textContent)}
+              style={{ flex:1,fontSize:11,color:'#4A5568',outline:'none',cursor:'text',lineHeight:1.3,minWidth:20 }}>
+              {sub.name}
+            </div>
+            {/* Edit-only buttons */}
+            <div className="eui" style={{ display:'flex',gap:1,flexShrink:0 }}>
+              <button className="tact" title="Adicionar barra" onClick={()=>onAddBar(track.id,sub.id)}>
+                <Ico n="plus" sz={10} c="#A0AEC0"/>
+              </button>
+              <button className="tact" title="Remover etapa" onClick={()=>onDelSubtask(track.id,sub.id)}>
+                <Ico n="trash" sz={10} c="#FC8181"/>
+              </button>
+            </div>
+          </div>
+          <div style={{ flex:1,position:'relative',minHeight:SUB_H }}>
+            <GridLines months={months}/>
+            {sub.bars.map((bar,bi)=>(
+              <GanttBar key={bi} bar={bar} color={track.color}
+                onMouseDown={(e,type)=>onStartDrag(e,track.id,sub.id,bi,type,bar)}/>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+});
+
+/* ─── SettingsPanel ─── */
+const SettingsPanel = ({ data,setData,onClose,onLogoUpload,onAddTrack,onDelTrack,updTrack }) => (
+  <div className="panel-in no-print" style={{ position:'fixed',right:0,top:0,width:340,height:'100vh',background:'white',boxShadow:'-4px 0 28px rgba(0,0,0,0.14)',padding:22,overflowY:'auto',zIndex:999 }}>
+    <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20 }}>
+      <h3 style={{ fontSize:15,fontWeight:800,color:'#1B2B5B' }}>Configurações</h3>
+      <button onClick={onClose} style={{ background:'none',border:'none',cursor:'pointer',color:'#718096' }}>
+        <Ico n="x" sz={18}/>
+      </button>
+    </div>
+    <Sec title="Logos">
+      <div style={{ display:'flex',gap:16,alignItems:'flex-start' }}>
+        <div><div style={lbl}>Logo Cliente</div><LogoSlot value={data.clientLogo} onUpload={onLogoUpload('clientLogo')} onClear={()=>setData(p=>({...p,clientLogo:null}))}/></div>
+        <div><div style={lbl}>Logo beX</div><LogoSlot value={data.bexLogo} onUpload={onLogoUpload('bexLogo')} onClear={()=>setData(p=>({...p,bexLogo:null}))}/></div>
+      </div>
+    </Sec>
+    <Sec title="Título">
+      <input value={data.title} onChange={e=>setData(p=>({...p,title:e.target.value}))} style={inp} placeholder="Título"/>
+      <input value={data.subtitle} onChange={e=>setData(p=>({...p,subtitle:e.target.value}))} style={{...inp,marginTop:6}} placeholder="Subtítulo"/>
+    </Sec>
+    <Sec title="Período da Linha do Tempo">
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:8 }}>
+        <div>
+          <div style={lbl}>Mês início</div>
+          <select value={data.tl.sm} onChange={e=>setData(p=>({...p,tl:{...p.tl,sm:+e.target.value}}))} style={sel}>
+            {MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}
+          </select>
+          <input type="number" value={data.tl.sy} onChange={e=>setData(p=>({...p,tl:{...p.tl,sy:+e.target.value}}))} style={{...sel,marginTop:4}}/>
+        </div>
+        <div>
+          <div style={lbl}>Mês fim</div>
+          <select value={data.tl.em} onChange={e=>setData(p=>({...p,tl:{...p.tl,em:+e.target.value}}))} style={sel}>
+            {MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}
+          </select>
+          <input type="number" value={data.tl.ey} onChange={e=>setData(p=>({...p,tl:{...p.tl,ey:+e.target.value}}))} style={{...sel,marginTop:4}}/>
+        </div>
+      </div>
+    </Sec>
+    <Sec title="Trilhas">
+      {data.tracks.map(t=>(
+        <div key={t.id} style={{ padding:'9px 10px',background:'#F7FAFC',borderRadius:8,marginBottom:7,border:'1px solid #EDF2F7' }}>
+          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:7 }}>
+            <span style={{ fontSize:11.5,fontWeight:600,color:'#2D3748',flex:1,paddingRight:4 }}>{t.name.length>34?t.name.slice(0,34)+'…':t.name}</span>
+            <button onClick={()=>onDelTrack(t.id)} style={{ background:'none',border:'none',cursor:'pointer',color:'#E53E3E',padding:2 }}><Ico n="trash" sz={12}/></button>
+          </div>
+          <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+            <span style={{ fontSize:11,color:'#A0AEC0',fontWeight:500 }}>Cor:</span>
+            <ColorPicker color={t.color} onChange={c=>updTrack(t.id,{color:c})}/>
+          </div>
+        </div>
+      ))}
+      <button className="btn btn-blue" onClick={onAddTrack} style={{ width:'100%',justifyContent:'center',marginTop:4 }}>
+        <Ico n="plus" sz={13}/>Nova Trilha
+      </button>
+    </Sec>
+  </div>
+);
+
+/* ─── TrackPanel ─── */
+const TrackPanel = ({ track,onClose,onUpdate,onAddSubtask,onDelSubtask,updSubtask,onDelTrack,totalWeeks }) => (
+  <div className="panel-in no-print" style={{ position:'fixed',right:0,top:0,width:320,height:'100vh',background:'white',boxShadow:'-4px 0 28px rgba(0,0,0,0.14)',padding:22,overflowY:'auto',zIndex:999 }}>
+    <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18 }}>
+      <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+        <div style={{ width:14,height:14,borderRadius:3,background:track.color }}/>
+        <h3 style={{ fontSize:14,fontWeight:700,color:'#1B2B5B' }}>Editar Trilha</h3>
+      </div>
+      <button onClick={onClose} style={{ background:'none',border:'none',cursor:'pointer',color:'#718096' }}><Ico n="x" sz={18}/></button>
+    </div>
+    <Sec title="Nome"><input value={track.name} onChange={e=>onUpdate({name:e.target.value})} style={inp}/></Sec>
+    <Sec title="Cor"><ColorPicker color={track.color} onChange={c=>onUpdate({color:c})}/></Sec>
+    <Sec title="Barra Principal">
+      {track.bar?(
+        <>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8 }}>
+            <div><div style={lbl}>Início (semana)</div>
+              <input type="number" min={0} max={totalWeeks-1} value={track.bar.s}
+                onChange={e=>onUpdate({bar:{...track.bar,s:Math.max(0,Math.min(+e.target.value,track.bar.e-1))}})} style={inp}/></div>
+            <div><div style={lbl}>Fim (semana)</div>
+              <input type="number" min={0} max={totalWeeks-1} value={track.bar.e}
+                onChange={e=>onUpdate({bar:{...track.bar,e:Math.max(track.bar.s+1,Math.min(+e.target.value,totalWeeks-1))}})} style={inp}/></div>
+          </div>
+          <div style={{ marginBottom:8 }}>
+            <div style={lbl}>Texto da barra <span style={{ color:'#CBD5E0',fontWeight:400 }}>(opcional)</span></div>
+            <input value={track.bar.label||''} placeholder="Ex: 3ª semana de dez — 4ª semana de ago"
+              onChange={e=>onUpdate({bar:{...track.bar,label:e.target.value||null}})} style={inp}/>
+          </div>
+          <button className="btn btn-danger" onClick={()=>onUpdate({bar:null})} style={{ fontSize:11 }}>
+            <Ico n="trash" sz={11}/>Remover barra
+          </button>
+        </>
+      ):(
+        <button className="btn btn-blue" onClick={()=>onUpdate({bar:{s:0,e:7}})} style={{ fontSize:11 }}>
+          <Ico n="plus" sz={11}/>Adicionar barra
+        </button>
+      )}
+    </Sec>
+    <Sec title={`Etapas (${track.subtasks.length})`}>
+      {track.subtasks.map(sub=>(
+        <div key={sub.id} style={{ padding:'8px 10px',background:'#F7FAFC',borderRadius:8,marginBottom:7,border:'1px solid #EDF2F7' }}>
+          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5 }}>
+            <input value={sub.name} onChange={e=>updSubtask(sub.id,{name:e.target.value})}
+              style={{ flex:1,fontSize:12,fontWeight:500,border:'none',background:'transparent',outline:'none',color:'#2D3748',marginRight:6 }}/>
+            <button onClick={()=>onDelSubtask(sub.id)} style={{ background:'none',border:'none',cursor:'pointer',color:'#E53E3E',padding:2,flexShrink:0 }}>
+              <Ico n="trash" sz={11}/>
+            </button>
+          </div>
+          {sub.bars.map((bar,bi)=>(
+            <div key={bi} style={{ display:'flex',gap:5,alignItems:'center',marginBottom:4,fontSize:11 }}>
+              <span style={{ color:track.color,fontWeight:600,minWidth:14 }}>{bi+1}</span>
+              <input type="number" value={bar.s} min={0} max={totalWeeks-1}
+                onChange={e=>updSubtask(sub.id,{bars:sub.bars.map((b,i)=>i===bi?{...b,s:+e.target.value}:b)})}
+                style={{ width:46,...inp,padding:'3px 6px',fontSize:11 }} title="Semana início"/>
+              <span style={{ color:'#CBD5E0' }}>→</span>
+              <input type="number" value={bar.e} min={0} max={totalWeeks-1}
+                onChange={e=>updSubtask(sub.id,{bars:sub.bars.map((b,i)=>i===bi?{...b,e:+e.target.value}:b)})}
+                style={{ width:46,...inp,padding:'3px 6px',fontSize:11 }} title="Semana fim"/>
+              <input value={bar.label||''} placeholder="Texto (opcional)"
+                onChange={e=>updSubtask(sub.id,{bars:sub.bars.map((b,i)=>i===bi?{...b,label:e.target.value||null}:b)})}
+                style={{ flex:1,...inp,padding:'3px 6px',fontSize:11 }} title="Texto da barra"/>
+              <button onClick={()=>updSubtask(sub.id,{bars:sub.bars.filter((_,i)=>i!==bi)})}
+                style={{ background:'none',border:'none',cursor:'pointer',color:'#FC8181',flexShrink:0,padding:1 }}>
+                <Ico n="x" sz={11}/>
+              </button>
+            </div>
+          ))}
+          <button onClick={()=>updSubtask(sub.id,{bars:[...sub.bars,{s:0,e:3}]})}
+            style={{ fontSize:10,color:track.color,background:'none',border:'none',cursor:'pointer',padding:'2px 0',display:'flex',alignItems:'center',gap:3 }}>
+            <Ico n="plus" sz={10}/>Adicionar barra
+          </button>
+        </div>
+      ))}
+      <button className="btn btn-blue" onClick={onAddSubtask} style={{ fontSize:11,width:'100%',justifyContent:'center',marginTop:4 }}>
+        <Ico n="plus" sz={11}/>Adicionar Etapa
+      </button>
+    </Sec>
+    <div style={{ marginTop:20,paddingTop:16,borderTop:'1px solid #EDF2F7' }}>
+      <button className="btn btn-danger" onClick={()=>{onDelTrack();onClose();}} style={{ width:'100%',justifyContent:'center' }}>
+        <Ico n="trash" sz={13}/>Remover esta trilha
+      </button>
+    </div>
+  </div>
+);
+
+/* ─── Small helpers ─── */
+const Sec = ({ title,children }) => (
+  <div style={{ marginBottom:20 }}>
+    <div style={{ fontSize:11,fontWeight:700,color:'#718096',letterSpacing:'.06em',textTransform:'uppercase',marginBottom:8 }}>{title}</div>
+    {children}
+  </div>
+);
+const inp = { width:'100%',padding:'7px 10px',border:'1px solid #E2E8F0',borderRadius:6,fontSize:12,outline:'none',color:'#2D3748' };
+const sel = { width:'100%',padding:'6px 8px',border:'1px solid #E2E8F0',borderRadius:5,fontSize:12,outline:'none',color:'#2D3748',background:'white' };
+const lbl = { fontSize:11,color:'#A0AEC0',marginBottom:3,fontWeight:500 };
+
+/* ─── Mount ─── */
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
