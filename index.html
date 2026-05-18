@@ -552,7 +552,7 @@ const App = () => {
           onAddSubtask={()=>addSubtask(selTrack.id)}
           onDelSubtask={sid=>delSubtask(selTrack.id,sid)}
           updSubtask={(sid,p)=>updSubtask(selTrack.id,sid,p)}
-          onDelTrack={()=>delTrack(selTrack.id)} totalWeeks={totalWeeks}/>
+          onDelTrack={()=>delTrack(selTrack.id)} totalWeeks={totalWeeks} months={months}/>
       )}
     </div>
   );
@@ -829,8 +829,90 @@ const SettingsPanel = ({ data,setData,onClose,onLogoUpload,onAddTrack,onDelTrack
   </div>
 );
 
+/* ─── Bar position helpers ─── */
+// week number → { monthIdx, weekInMonth (1-4) }
+const weekToMW = (w, months) => ({
+  monthIdx: Math.min(Math.floor(w / 4), Math.max(months.length - 1, 0)),
+  weekInMonth: (w % 4) + 1,
+});
+// monthIdx + weekInMonth → week number
+const mwToWeek = (mi, wim) => mi * 4 + (wim - 1);
+// duration in weeks from s..e (inclusive)
+const barDur = (s, e) => Math.max(e - s + 1, 1);
+
+/* ─── BarEditor: shared UI for editing one bar ─── */
+const BarEditor = ({ bar, months, totalWeeks, onChange, onRemove, index, color }) => {
+  const { monthIdx: startMI, weekInMonth: startWIM } = weekToMW(bar.s, months);
+  const dur = barDur(bar.s, bar.e);
+
+  const update = (newMI, newWIM, newDur) => {
+    const s = Math.max(0, Math.min(mwToWeek(newMI, newWIM), totalWeeks - 1));
+    const e = Math.max(s, Math.min(s + newDur - 1, totalWeeks - 1));
+    onChange({ ...bar, s, e });
+  };
+
+  return (
+    <div style={{ background:'#F7FAFC', border:'1px solid #EDF2F7', borderRadius:8, padding:'10px 10px 8px', marginBottom:8 }}>
+      {/* Bar index label */}
+      {index !== undefined && (
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:color, background: color+'22', padding:'2px 8px', borderRadius:10 }}>
+            Barra {index + 1}
+          </span>
+          {onRemove && (
+            <button onClick={onRemove} style={{ background:'none', border:'none', cursor:'pointer', color:'#FC8181', padding:2 }}>
+              <Ico n="trash" sz={12}/>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Row 1: Mês início + Semana */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 80px', gap:6, marginBottom:6 }}>
+        <div>
+          <div style={lbl}>Mês de início</div>
+          <select value={startMI} onChange={e => update(+e.target.value, startWIM, dur)} style={sel}>
+            {months.map((mo, i) => (
+              <option key={i} value={i}>{MONTHS[mo.m]} {mo.y}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <div style={lbl}>Semana</div>
+          <select value={startWIM} onChange={e => update(startMI, +e.target.value, dur)} style={sel}>
+            {[1,2,3,4].map(w => <option key={w} value={w}>{w}ª</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Row 2: Duração */}
+      <div style={{ marginBottom:6 }}>
+        <div style={lbl}>Duração</div>
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+          <input type="number" min={1} max={totalWeeks} value={dur}
+            onChange={e => update(startMI, startWIM, Math.max(1, +e.target.value))}
+            style={{ ...inp, width:70 }}/>
+          <span style={{ fontSize:12, color:'#718096', fontWeight:500 }}>semanas</span>
+          <span style={{ fontSize:11, color:'#A0AEC0' }}>
+            (até {MONTHS[months[Math.min(Math.floor((mwToWeek(startMI,startWIM)+dur-1)/4), months.length-1)]?.m ?? 0]} sem.&nbsp;
+            {((mwToWeek(startMI,startWIM)+dur-1) % 4) + 1})
+          </span>
+        </div>
+      </div>
+
+      {/* Row 3: Label */}
+      <div>
+        <div style={lbl}>Texto da barra <span style={{ color:'#CBD5E0', fontWeight:400 }}>(opcional)</span></div>
+        <input value={bar.label||''} placeholder="Ex: Jan a Jun 2026"
+          onChange={e => onChange({ ...bar, label: e.target.value || null })}
+          style={inp}/>
+      </div>
+    </div>
+  );
+};
+
 /* ─── TrackPanel ─── */
-const TrackPanel = ({ track,onClose,onUpdate,onAddSubtask,onDelSubtask,updSubtask,onDelTrack,totalWeeks }) => (
+const TrackPanel = ({ track,onClose,onUpdate,onAddSubtask,onDelSubtask,updSubtask,onDelTrack,totalWeeks,months }) => (
   <div className="panel-in no-print" style={{ position:'fixed',right:0,top:0,width:320,height:'100vh',background:'white',boxShadow:'-4px 0 28px rgba(0,0,0,0.14)',padding:22,overflowY:'auto',zIndex:999 }}>
     <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18 }}>
       <div style={{ display:'flex',alignItems:'center',gap:8 }}>
@@ -842,62 +924,49 @@ const TrackPanel = ({ track,onClose,onUpdate,onAddSubtask,onDelSubtask,updSubtas
     <Sec title="Nome"><input value={track.name} onChange={e=>onUpdate({name:e.target.value})} style={inp}/></Sec>
     <Sec title="Cor"><ColorPicker color={track.color} onChange={c=>onUpdate({color:c})}/></Sec>
     <Sec title="Barra Principal">
-      {track.bar?(
+      {track.bar ? (
         <>
-          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8 }}>
-            <div><div style={lbl}>Início (semana)</div>
-              <input type="number" min={0} max={totalWeeks-1} value={track.bar.s}
-                onChange={e=>onUpdate({bar:{...track.bar,s:Math.max(0,Math.min(+e.target.value,track.bar.e-1))}})} style={inp}/></div>
-            <div><div style={lbl}>Fim (semana)</div>
-              <input type="number" min={0} max={totalWeeks-1} value={track.bar.e}
-                onChange={e=>onUpdate({bar:{...track.bar,e:Math.max(track.bar.s+1,Math.min(+e.target.value,totalWeeks-1))}})} style={inp}/></div>
-          </div>
-          <div style={{ marginBottom:8 }}>
-            <div style={lbl}>Texto da barra <span style={{ color:'#CBD5E0',fontWeight:400 }}>(opcional)</span></div>
-            <input value={track.bar.label||''} placeholder="Ex: 3ª semana de dez — 4ª semana de ago"
-              onChange={e=>onUpdate({bar:{...track.bar,label:e.target.value||null}})} style={inp}/>
-          </div>
-          <button className="btn btn-danger" onClick={()=>onUpdate({bar:null})} style={{ fontSize:11 }}>
+          <BarEditor
+            bar={track.bar} months={months} totalWeeks={totalWeeks} color={track.color}
+            onChange={b => onUpdate({ bar: b })}
+          />
+          <button className="btn btn-danger" onClick={()=>onUpdate({bar:null})} style={{ fontSize:11, marginTop:4 }}>
             <Ico n="trash" sz={11}/>Remover barra
           </button>
         </>
-      ):(
-        <button className="btn btn-blue" onClick={()=>onUpdate({bar:{s:0,e:7}})} style={{ fontSize:11 }}>
+      ) : (
+        <button className="btn btn-blue" onClick={()=>onUpdate({bar:{s:0,e:3}})} style={{ fontSize:11 }}>
           <Ico n="plus" sz={11}/>Adicionar barra
         </button>
       )}
     </Sec>
     <Sec title={`Etapas (${track.subtasks.length})`}>
       {track.subtasks.map(sub=>(
-        <div key={sub.id} style={{ padding:'8px 10px',background:'#F7FAFC',borderRadius:8,marginBottom:7,border:'1px solid #EDF2F7' }}>
-          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5 }}>
+        <div key={sub.id} style={{ marginBottom:12 }}>
+          {/* Subtask name row */}
+          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6 }}>
             <input value={sub.name} onChange={e=>updSubtask(sub.id,{name:e.target.value})}
-              style={{ flex:1,fontSize:12,fontWeight:500,border:'none',background:'transparent',outline:'none',color:'#2D3748',marginRight:6 }}/>
-            <button onClick={()=>onDelSubtask(sub.id)} style={{ background:'none',border:'none',cursor:'pointer',color:'#E53E3E',padding:2,flexShrink:0 }}>
+              style={{ flex:1,fontSize:12,fontWeight:600,border:'none',borderBottom:'2px solid '+track.color+'44',
+                background:'transparent',outline:'none',color:'#2D3748',marginRight:6,padding:'2px 0' }}
+              placeholder="Nome da etapa"/>
+            <button onClick={()=>onDelSubtask(sub.id)}
+              style={{ background:'none',border:'none',cursor:'pointer',color:'#E53E3E',padding:2,flexShrink:0 }}>
               <Ico n="trash" sz={11}/>
             </button>
           </div>
+          {/* Bars */}
           {sub.bars.map((bar,bi)=>(
-            <div key={bi} style={{ display:'flex',gap:5,alignItems:'center',marginBottom:4,fontSize:11 }}>
-              <span style={{ color:track.color,fontWeight:600,minWidth:14 }}>{bi+1}</span>
-              <input type="number" value={bar.s} min={0} max={totalWeeks-1}
-                onChange={e=>updSubtask(sub.id,{bars:sub.bars.map((b,i)=>i===bi?{...b,s:+e.target.value}:b)})}
-                style={{ width:46,...inp,padding:'3px 6px',fontSize:11 }} title="Semana início"/>
-              <span style={{ color:'#CBD5E0' }}>→</span>
-              <input type="number" value={bar.e} min={0} max={totalWeeks-1}
-                onChange={e=>updSubtask(sub.id,{bars:sub.bars.map((b,i)=>i===bi?{...b,e:+e.target.value}:b)})}
-                style={{ width:46,...inp,padding:'3px 6px',fontSize:11 }} title="Semana fim"/>
-              <input value={bar.label||''} placeholder="Texto (opcional)"
-                onChange={e=>updSubtask(sub.id,{bars:sub.bars.map((b,i)=>i===bi?{...b,label:e.target.value||null}:b)})}
-                style={{ flex:1,...inp,padding:'3px 6px',fontSize:11 }} title="Texto da barra"/>
-              <button onClick={()=>updSubtask(sub.id,{bars:sub.bars.filter((_,i)=>i!==bi)})}
-                style={{ background:'none',border:'none',cursor:'pointer',color:'#FC8181',flexShrink:0,padding:1 }}>
-                <Ico n="x" sz={11}/>
-              </button>
-            </div>
+            <BarEditor key={bi}
+              bar={bar} months={months} totalWeeks={totalWeeks} color={track.color}
+              index={bi}
+              onChange={b => updSubtask(sub.id,{ bars: sub.bars.map((x,i)=>i===bi?b:x) })}
+              onRemove={() => updSubtask(sub.id,{ bars: sub.bars.filter((_,i)=>i!==bi) })}
+            />
           ))}
           <button onClick={()=>updSubtask(sub.id,{bars:[...sub.bars,{s:0,e:3}]})}
-            style={{ fontSize:10,color:track.color,background:'none',border:'none',cursor:'pointer',padding:'2px 0',display:'flex',alignItems:'center',gap:3 }}>
+            style={{ fontSize:10,color:track.color,background:'none',border:'none',cursor:'pointer',
+              padding:'4px 8px',display:'flex',alignItems:'center',gap:3,
+              border:'1px dashed '+track.color+'66',borderRadius:6,width:'100%',justifyContent:'center' }}>
             <Ico n="plus" sz={10}/>Adicionar barra
           </button>
         </div>
