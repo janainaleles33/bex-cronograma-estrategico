@@ -25,6 +25,13 @@
     /* In export mode, if logo exists show it; if not, collapse the logo slot */
     .exporting .logo-slot-empty { display: none !important; }
 
+    /* ── Read-only mode (shared link view): hide all editing UI ── */
+    .readonly-mode .eui { display: none !important; }
+    .readonly-mode .logo-slot-empty { display: none !important; }
+    .readonly-mode [contenteditable] { pointer-events: none !important; cursor: default !important; outline: none !important; }
+    .readonly-mode .gantt-bar { cursor: default !important; pointer-events: none !important; }
+    .readonly-mode .resize-l, .readonly-mode .resize-r { pointer-events: none !important; }
+
     .gantt-bar { cursor: grab; user-select: none; }
     .gantt-bar:active { cursor: grabbing; }
     .resize-l, .resize-r { cursor: ew-resize; }
@@ -275,6 +282,26 @@ const decodeShare = str => {
   try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch(e){ return null; }
 };
 
+/* ── Compress image dataURL for URL sharing (canvas resize + JPEG) ── */
+const compressDataUrl = (src, maxW, maxH, quality) => new Promise(resolve => {
+  if (!src) { resolve(null); return; }
+  const img = new Image();
+  img.onload = () => {
+    const ratio = Math.min(maxW / img.width, maxH / img.height, 1);
+    const w = Math.round(img.width * ratio);
+    const h = Math.round(img.height * ratio);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    resolve(c.toDataURL('image/jpeg', quality));
+  };
+  img.onerror = () => resolve(src);
+  img.src = src;
+});
+
+/* ── Module-level flag: set true when page is opened via a #share= link ── */
+let _sharedMode = false;
+
 const App = () => {
   /* ── State ── */
   const [appState, setAppState] = useState(() => {
@@ -283,6 +310,7 @@ const App = () => {
     if (hash.startsWith('#share=')) {
       const shared = decodeShare(hash.slice(7));
       if (shared) {
+        _sharedMode = true; // mark as read-only viewer session
         const cid=uid(), vid=uid();
         // Clear hash without reload
         history.replaceState(null,'',window.location.pathname+window.location.search);
@@ -298,6 +326,7 @@ const App = () => {
     try { const s=localStorage.getItem(STORAGE_KEY); if(s) return JSON.parse(s); } catch(e){}
     return mkAppState();
   });
+  const readOnly = _sharedMode; // true when opened via shared #share= link
   const [panel, setPanel] = useState(null);   // 'settings' | 'track:{id}' | null
   const [exporting, setExporting] = useState(false); // false | 'png' | 'pdf'
   const [toast, setToast] = useState(null);
@@ -379,9 +408,10 @@ const App = () => {
   },[setData]);
 
   const startDrag = useCallback((e,trackId,subtaskId,barIdx,type,bar)=>{
+    if (readOnly) return; // no dragging in view-only mode
     e.preventDefault(); e.stopPropagation();
     dragRef.current = { trackId,subtaskId,barIdx,type,sx:e.clientX,os:bar.s,oe:bar.e };
-  },[]);
+  },[readOnly]);
 
   /* ── Track/subtask mutators ── */
   const updTrack   = (id,patch) => setData(p=>({...p,tracks:p.tracks.map(t=>t.id===id?{...t,...patch}:t)}));
@@ -479,19 +509,25 @@ const App = () => {
     setExporting(false);
   };
 
-  /* ── Share ── */
-  const shareLink = () => {
+  /* ── Share (async: compress logos to keep URL compact) ── */
+  const shareLink = async () => {
+    setToast('⏳ Gerando link…');
+    // Compress logos to max 280×90 JPEG 0.75 — typically ≈ 10–25 KB each
+    const [cLogo, bLogo] = await Promise.all([
+      compressDataUrl(data.clientLogo, 280, 90, 0.75),
+      compressDataUrl(data.bexLogo,    280, 90, 0.75),
+    ]);
     const payload = {
       clientName: activeClient.name,
       versionLabel: activeVersion.label,
-      data: { ...data, clientLogo: null, bexLogo: null }, // strip logos (too big for URL)
+      data: { ...data, clientLogo: cLogo, bexLogo: bLogo },
     };
     const encoded = encodeShare(payload);
-    if (!encoded) { alert('Erro ao gerar link.'); return; }
+    if (!encoded) { setToast('❌ Erro ao gerar link.'); return; }
     const url = `${window.location.origin}${window.location.pathname}#share=${encoded}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(url)
-        .then(()=> setToast('✅ Link copiado! Cole e envie para quem quiser. (logos devem ser reenviadas)'))
+        .then(()=> setToast('✅ Link copiado! Logos incluídas. Cole e envie para quem quiser.'))
         .catch(()=>{ prompt('Copie este link:', url); });
     } else {
       prompt('Copie este link:', url);
@@ -505,46 +541,76 @@ const App = () => {
   return (
     <div style={{ minHeight:'100vh',background:'#E8EDF5',padding:16 }}>
 
-      {/* ── Client / Version bar ── */}
-      <ClientVersionBar
-        appState={appState} activeClient={activeClient} activeVersion={activeVersion}
-        onAddClient={addClient} onSwitchClient={switchClient}
-        onRenameClient={renameClient} onDeleteClient={deleteClient}
-        onAddVersion={addVersion} onSwitchVersion={switchVersion}
-        onRenameVersion={renameVersion} onDeleteVersion={deleteVersion}
-      />
+      {/* ── Client / Version bar — hidden in read-only mode ── */}
+      {!readOnly && (
+        <ClientVersionBar
+          appState={appState} activeClient={activeClient} activeVersion={activeVersion}
+          onAddClient={addClient} onSwitchClient={switchClient}
+          onRenameClient={renameClient} onDeleteClient={deleteClient}
+          onAddVersion={addVersion} onSwitchVersion={switchVersion}
+          onRenameVersion={renameVersion} onDeleteVersion={deleteVersion}
+        />
+      )}
 
-      {/* ── Actions toolbar ── */}
-      <div className="no-print" style={{
-        display:'flex',alignItems:'center',justifyContent:'space-between',
-        background:'white',borderRadius:10,padding:'9px 16px',
-        boxShadow:'0 2px 8px rgba(0,0,0,0.07)',marginBottom:14,flexWrap:'wrap',gap:8,
-      }}>
-        <div style={{ display:'flex',alignItems:'center',gap:10 }}>
-          <span style={{ fontSize:14,fontWeight:800,color:'#1B2B5B',letterSpacing:'-0.02em' }}>Cronograma Estratégico</span>
-          <span style={{ fontSize:10,color:'#718096',background:'#EDF2F7',padding:'2px 9px',borderRadius:20,fontWeight:600 }}>beX Educação</span>
+      {/* ── Actions toolbar (editing) — hidden in read-only mode ── */}
+      {!readOnly && (
+        <div className="no-print" style={{
+          display:'flex',alignItems:'center',justifyContent:'space-between',
+          background:'white',borderRadius:10,padding:'9px 16px',
+          boxShadow:'0 2px 8px rgba(0,0,0,0.07)',marginBottom:14,flexWrap:'wrap',gap:8,
+        }}>
+          <div style={{ display:'flex',alignItems:'center',gap:10 }}>
+            <span style={{ fontSize:14,fontWeight:800,color:'#1B2B5B',letterSpacing:'-0.02em' }}>Cronograma Estratégico</span>
+            <span style={{ fontSize:10,color:'#718096',background:'#EDF2F7',padding:'2px 9px',borderRadius:20,fontWeight:600 }}>beX Educação</span>
+          </div>
+          <div style={{ display:'flex',gap:7,flexWrap:'wrap' }}>
+            <button className="btn btn-blue" onClick={addTrack}><Ico n="plus" sz={13}/>Nova Trilha</button>
+            <button className="btn btn-outline" onClick={()=>setPanel(panel==='settings'?null:'settings')} style={{ background:panel==='settings'?'#EDF2F7':'white' }}>
+              <Ico n="gear" sz={13}/>Configurar
+            </button>
+            <button className="btn btn-outline" onClick={shareLink}
+              style={{ color:'#6B46C1', borderColor:'#D6BCFA', background:'#FAF5FF' }}>
+              <Ico n="copy" sz={13} c="#6B46C1"/>Compartilhar
+            </button>
+            <button className="btn btn-outline" onClick={()=>window.print()}><Ico n="print" sz={13}/>Imprimir</button>
+            <button className="btn btn-primary" onClick={exportPNG} disabled={!!exporting}>
+              <Ico n="img" sz={13} c="white"/>{exporting==='png'?'Gerando…':'PNG'}
+            </button>
+            <button className="btn btn-red" onClick={exportPDF} disabled={!!exporting}>
+              <Ico n="down" sz={13} c="white"/>{exporting==='pdf'?'Gerando…':'PDF'}
+            </button>
+          </div>
         </div>
-        <div style={{ display:'flex',gap:7,flexWrap:'wrap' }}>
-          <button className="btn btn-blue" onClick={addTrack}><Ico n="plus" sz={13}/>Nova Trilha</button>
-          <button className="btn btn-outline" onClick={()=>setPanel(panel==='settings'?null:'settings')} style={{ background:panel==='settings'?'#EDF2F7':'white' }}>
-            <Ico n="gear" sz={13}/>Configurar
-          </button>
-          <button className="btn btn-outline" onClick={shareLink}
-            style={{ color:'#6B46C1', borderColor:'#D6BCFA', background:'#FAF5FF' }}>
-            <Ico n="copy" sz={13} c="#6B46C1"/>Compartilhar
-          </button>
-          <button className="btn btn-outline" onClick={()=>window.print()}><Ico n="print" sz={13}/>Imprimir</button>
-          <button className="btn btn-primary" onClick={exportPNG} disabled={!!exporting}>
-            <Ico n="img" sz={13} c="white"/>{exporting==='png'?'Gerando…':'PNG'}
-          </button>
-          <button className="btn btn-red" onClick={exportPDF} disabled={!!exporting}>
-            <Ico n="down" sz={13} c="white"/>{exporting==='pdf'?'Gerando…':'PDF'}
-          </button>
+      )}
+
+      {/* ── Read-only banner — shown only in shared view ── */}
+      {readOnly && (
+        <div className="no-print" style={{
+          display:'flex',alignItems:'center',justifyContent:'space-between',
+          background:'white',borderRadius:10,padding:'10px 18px',
+          boxShadow:'0 2px 8px rgba(0,0,0,0.07)',marginBottom:14,flexWrap:'wrap',gap:8,
+        }}>
+          <div style={{ display:'flex',alignItems:'center',gap:10 }}>
+            <span style={{ fontSize:14,fontWeight:800,color:'#1B2B5B',letterSpacing:'-0.02em' }}>Cronograma Estratégico</span>
+            <span style={{ fontSize:10,color:'#718096',background:'#EDF2F7',padding:'2px 9px',borderRadius:20,fontWeight:600 }}>beX Educação</span>
+            <span style={{ fontSize:10,color:'#744210',background:'#FEFCBF',border:'1px solid #F6E05E',padding:'2px 10px',borderRadius:20,fontWeight:700 }}>
+              👁 Visualização — somente leitura
+            </span>
+          </div>
+          <div style={{ display:'flex',gap:7,flexWrap:'wrap' }}>
+            <button className="btn btn-outline" onClick={()=>window.print()}><Ico n="print" sz={13}/>Imprimir</button>
+            <button className="btn btn-primary" onClick={exportPNG} disabled={!!exporting}>
+              <Ico n="img" sz={13} c="white"/>{exporting==='png'?'Gerando…':'PNG'}
+            </button>
+            <button className="btn btn-red" onClick={exportPDF} disabled={!!exporting}>
+              <Ico n="down" sz={13} c="white"/>{exporting==='pdf'?'Gerando…':'PDF'}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Chart card (captured for export) ── */}
-      <div ref={chartRef} style={{
+      <div ref={chartRef} className={readOnly?'readonly-mode':''} style={{
         background:'white',borderRadius:12,
         boxShadow:'0 4px 24px rgba(0,0,0,0.09)',overflow:'hidden',
         minWidth:LEFT_W+totalWeeks*COL_W+32,
@@ -596,10 +662,10 @@ const App = () => {
       </div>
 
       {/* ── Panels overlay ── */}
-      {panel&&<div className="no-print" onClick={()=>setPanel(null)}
+      {!readOnly&&panel&&<div className="no-print" onClick={()=>setPanel(null)}
         style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.28)',zIndex:998 }}/>}
 
-      {panel==='settings'&&(
+      {!readOnly&&panel==='settings'&&(
         <SettingsPanel data={data} setData={setData} onClose={()=>setPanel(null)}
           onLogoUpload={handleLogo} onAddTrack={addTrack} onDelTrack={delTrack} updTrack={updTrack}/>
       )}
@@ -615,7 +681,7 @@ const App = () => {
         </div>
       )}
 
-      {selTrack&&(
+      {!readOnly&&selTrack&&(
         <TrackPanel track={selTrack} onClose={()=>setPanel(null)}
           onUpdate={p=>updTrack(selTrack.id,p)}
           onAddSubtask={()=>addSubtask(selTrack.id)}
