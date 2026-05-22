@@ -32,6 +32,7 @@
     .exporting [contenteditable] { pointer-events: none; outline: none; }
 
     @keyframes slideIn { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
+    @keyframes fadeUp  { from { opacity:0; transform:translateX(-50%) translateY(12px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
     .panel-in { animation: slideIn 0.18s ease-out; }
 
     @media print {
@@ -266,14 +267,47 @@ const GridLines = React.memo(({ months }) => (
 /* ═══════════════════════════════════════════════════
    APP
 ═══════════════════════════════════════════════════ */
+/* ── Share encode/decode ── */
+const encodeShare = data => {
+  try { return btoa(unescape(encodeURIComponent(JSON.stringify(data)))); } catch(e){ return null; }
+};
+const decodeShare = str => {
+  try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch(e){ return null; }
+};
+
 const App = () => {
   /* ── State ── */
   const [appState, setAppState] = useState(() => {
+    // Check URL hash for a shared cronograma
+    const hash = window.location.hash;
+    if (hash.startsWith('#share=')) {
+      const shared = decodeShare(hash.slice(7));
+      if (shared) {
+        const cid=uid(), vid=uid();
+        // Clear hash without reload
+        history.replaceState(null,'',window.location.pathname+window.location.search);
+        return {
+          activeClientId: cid,
+          clients: [{ id:cid, name:shared.clientName||'Compartilhado',
+            activeVersionId:vid,
+            versions:[{ id:vid, label:shared.versionLabel||'V1', createdAt:Date.now(), data:shared.data }]
+          }]
+        };
+      }
+    }
     try { const s=localStorage.getItem(STORAGE_KEY); if(s) return JSON.parse(s); } catch(e){}
     return mkAppState();
   });
   const [panel, setPanel] = useState(null);   // 'settings' | 'track:{id}' | null
   const [exporting, setExporting] = useState(false); // false | 'png' | 'pdf'
+  const [toast, setToast] = useState(null);
+
+  /* ── Toast auto-dismiss ── */
+  useEffect(()=>{
+    if (!toast) return;
+    const t = setTimeout(()=>setToast(null), 4500);
+    return ()=>clearTimeout(t);
+  }, [toast]);
 
   /* ── Persist ── */
   useEffect(()=>{
@@ -445,6 +479,25 @@ const App = () => {
     setExporting(false);
   };
 
+  /* ── Share ── */
+  const shareLink = () => {
+    const payload = {
+      clientName: activeClient.name,
+      versionLabel: activeVersion.label,
+      data: { ...data, clientLogo: null, bexLogo: null }, // strip logos (too big for URL)
+    };
+    const encoded = encodeShare(payload);
+    if (!encoded) { alert('Erro ao gerar link.'); return; }
+    const url = `${window.location.origin}${window.location.pathname}#share=${encoded}`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url)
+        .then(()=> setToast('✅ Link copiado! Cole e envie para quem quiser. (logos devem ser reenviadas)'))
+        .catch(()=>{ prompt('Copie este link:', url); });
+    } else {
+      prompt('Copie este link:', url);
+    }
+  };
+
   const selTrackId = panel?.startsWith('track:')?panel.slice(6):null;
   const selTrack   = selTrackId?data.tracks.find(t=>t.id===selTrackId):null;
 
@@ -475,6 +528,10 @@ const App = () => {
           <button className="btn btn-blue" onClick={addTrack}><Ico n="plus" sz={13}/>Nova Trilha</button>
           <button className="btn btn-outline" onClick={()=>setPanel(panel==='settings'?null:'settings')} style={{ background:panel==='settings'?'#EDF2F7':'white' }}>
             <Ico n="gear" sz={13}/>Configurar
+          </button>
+          <button className="btn btn-outline" onClick={shareLink}
+            style={{ color:'#6B46C1', borderColor:'#D6BCFA', background:'#FAF5FF' }}>
+            <Ico n="copy" sz={13} c="#6B46C1"/>Compartilhar
           </button>
           <button className="btn btn-outline" onClick={()=>window.print()}><Ico n="print" sz={13}/>Imprimir</button>
           <button className="btn btn-primary" onClick={exportPNG} disabled={!!exporting}>
@@ -546,6 +603,18 @@ const App = () => {
         <SettingsPanel data={data} setData={setData} onClose={()=>setPanel(null)}
           onLogoUpload={handleLogo} onAddTrack={addTrack} onDelTrack={delTrack} updTrack={updTrack}/>
       )}
+      {/* ── Toast notification ── */}
+      {toast&&(
+        <div style={{
+          position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)',
+          background:'#2D3748', color:'white', padding:'12px 22px', borderRadius:12,
+          boxShadow:'0 8px 24px rgba(0,0,0,0.25)', zIndex:9999, fontSize:13, fontWeight:500,
+          whiteSpace:'nowrap', maxWidth:'90vw', animation:'fadeUp 0.25s ease-out',
+        }}>
+          {toast}
+        </div>
+      )}
+
       {selTrack&&(
         <TrackPanel track={selTrack} onClose={()=>setPanel(null)}
           onUpdate={p=>updTrack(selTrack.id,p)}
